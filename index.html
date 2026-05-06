@@ -510,6 +510,105 @@ dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag
 document.getElementById('searchInput').addEventListener('keydown', e => { if(e.key==='Enter') handleSearch(); });
 
 renderTools('all');
+
+// ============================================
+// CLOUDCONVERT API
+// Collez votre clé API entre les guillemets :
+// ============================================
+const CLOUDCONVERT_API_KEY = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIxIiwianRpIjoiYmM1YmU0MmU2NTY0Yjg1ZmIyN2QzMGIzYjkxZGViMjM4YTExZmVlMzU1Yzc2YTk0M2Q5NmI5YmE5NGRhMDhkOWM0NWNlYmI0ZGUzMThiNDEiLCJpYXQiOjE3NzgwOTU4MDEuNDAzNjg1LCJuYmYiOjE3NzgwOTU4MDEuNDAzNjg2LCJleHAiOjQ5MzM3Njk0MDEuMzk2MzQ0LCJzdWIiOiI3NTQ0MDM3NCIsInNjb3BlcyI6WyJ1c2VyLnJlYWQiLCJ1c2VyLndyaXRlIiwidGFzay5yZWFkIiwidGFzay53cml0ZSIsIndlYmhvb2sucmVhZCIsIndlYmhvb2sud3JpdGUiLCJwcmVzZXQucmVhZCIsInByZXNldC53cml0ZSJdfQ.RFc-fwIUa_MkI6K0TsOTyu1s2AkMVdeIznbeCzVa_DJeMIZ0WZgNqFWo-oZfGXIZ25bm9egXRA_nqtVDAEgNSkT4qlbzmgAYLrO_DvGQrylcJmjn1lBRzbhPWGeBJ9pFq3jTPXt1Z7USXbEw216pGPAVp51HrXhL1qCseWHC9f3bT2C7pwQFaD88Xm1KaCpcmSu20o-OApor7vpkvako3ChLDswg3AU-3uT4qQ1GENlZhAndwFNG4kbRPEvdbwUDN66xRABCDMw7d9-P_j2PufqMaRKdYLXdlMzDeMjDqBet_vAj8FrfPRUJemlH1Yu4WxlUqq13qK_3trRCN83fF5SEkM95FSReKk57LG4g7Dl6-AjNEwkXjxakBGTt7JxFxrhytcg2jTEUtF2yn8CiWVPiaOtskvi2eyovwx1v15XePSVdjLR7P5HERk7_wx-9r1YSqFyx43YiC39j6USCP2lLZdbYPi1iEMVOm2wNp9wToA8e6XZ8XCInbooO4SPFffRrdjCpSZtK8PiBohZ30Afzw-1SddQgVRJ5BIFWy7TB3CUV8s__S8FQm2kT8eA5mLQkU0VsqSMwuyhJ6DPK3ZIXn2soZdCJgM5UTytl-gmL8ZOi7qaKFTtslUxG_Lx2kwG6wcKLZAbV55RXDCjuxpEvLBa4N9GSxtSnuWlIt_I';
+// ============================================
+
+async function convertWithCloudConvert(file, outputFormat) {
+  if (!CLOUDCONVERT_API_KEY || CLOUDCONVERT_API_KEY === 'COLLEZ_VOTRE_CLÉ_ICI') {
+    showToast('⚠️ Ajoutez votre clé API CloudConvert dans le fichier HTML');
+    return null;
+  }
+  try {
+    // Étape 1 : Créer le job
+    const jobRes = await fetch('https://api.cloudconvert.com/v2/jobs', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + CLOUDCONVERT_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tasks: {
+          'upload-file': { operation: 'import/upload' },
+          'convert-file': { operation: 'convert', input: 'upload-file', output_format: outputFormat.toLowerCase() },
+          'export-file': { operation: 'export/url', input: 'convert-file' }
+        }
+      })
+    });
+    const job = await jobRes.json();
+    if (!job.data) { showToast('Erreur API CloudConvert'); return null; }
+
+    // Étape 2 : Upload du fichier
+    const uploadTask = job.data.tasks.find(t => t.name === 'upload-file');
+    const uploadForm = new FormData();
+    Object.entries(uploadTask.result.form.parameters).forEach(([k,v]) => uploadForm.append(k, v));
+    uploadForm.append('file', file);
+    await fetch(uploadTask.result.form.url, { method: 'POST', body: uploadForm });
+
+    // Étape 3 : Attendre la fin de la conversion
+    let exportTask = null;
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const statusRes = await fetch('https://api.cloudconvert.com/v2/jobs/' + job.data.id, {
+        headers: { 'Authorization': 'Bearer ' + CLOUDCONVERT_API_KEY }
+      });
+      const status = await statusRes.json();
+      const done = status.data.tasks.find(t => t.name === 'export-file' && t.status === 'finished');
+      if (done) { exportTask = done; break; }
+      if (status.data.status === 'error') { showToast('Erreur lors de la conversion'); return null; }
+    }
+    if (!exportTask) { showToast('Délai dépassé, réessayez'); return null; }
+
+    // Étape 4 : Téléchargement automatique
+    const downloadUrl = exportTask.result.files[0].url;
+    const fileName = exportTask.result.files[0].filename;
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return fileName;
+  } catch (err) {
+    showToast('Erreur de connexion à CloudConvert');
+    return null;
+  }
+}
+
+async function startConversion() {
+  if (!selectedFile) return;
+  document.getElementById('convertBtn').classList.remove('visible');
+  document.getElementById('toolOptions').classList.remove('visible');
+  const pw = document.getElementById('progressWrap');
+  pw.classList.add('visible');
+  const isEdit = currentTool && currentTool.cat === 'edit';
+  const steps = isEdit
+    ? [{v:25,t:'Lecture du PDF…'},{v:55,t:'Application des modifications…'},{v:85,t:'Reconstruction…'}]
+    : [{v:15,t:'Envoi du fichier vers CloudConvert…'},{v:40,t:'Conversion en cours…'},{v:75,t:'Finalisation…'}];
+  let i = 0;
+  const interval = setInterval(() => {
+    if (i >= steps.length) { clearInterval(interval); return; }
+    const s = steps[i++];
+    document.getElementById('progressFill').style.width = s.v + '%';
+    document.getElementById('progressPct').textContent = s.v + '%';
+    document.getElementById('progressLabel').textContent = s.t;
+  }, 1000);
+
+  const result = await convertWithCloudConvert(selectedFile, currentTool.to);
+  clearInterval(interval);
+  document.getElementById('progressFill').style.width = '100%';
+  document.getElementById('progressPct').textContent = '100%';
+  document.getElementById('progressLabel').textContent = result ? 'Terminé !' : 'Échec';
+  setTimeout(() => {
+    document.getElementById('uploadSection').style.display = 'none';
+    document.getElementById('successBox').classList.add('visible');
+    const name = result || (selectedFile.name.replace(/\.[^.]+$/, '') + '.' + currentTool.to.toLowerCase());
+    document.getElementById('successSub').textContent = result
+      ? name + ' a été téléchargé dans vos téléchargements ✅'
+      : 'Une erreur est survenue. Vérifiez votre clé API.';
+  }, 500);
+}
 </script>
 </body>
 </html>
